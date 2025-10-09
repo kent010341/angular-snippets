@@ -21,16 +21,44 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
+import { Pipe, PipeTransform } from '@angular/core';
 
 /**
- * A pipe for generating excess mock data, primarily used for visual testing.
+ * A pipe for generating excess mock data with safe nested mocks, primarily used for visual testing.
  *
- * This pipe is intended for temporary development purposes, such as verifying
- * layout behavior, scroll performance, and overflow handling in PrimeNG components.
+ * This pipe is intended for **temporary development** purposes such as verifying layout stability,
+ * scroll performance, and overflow handling in Angular or PrimeNG components.
  *
- * When the input array is small or empty, it will be duplicated or filled with dummy
- * objects until it exceeds a predefined mock size. This helps simulate large datasets
- * without requiring actual backend data.
+ * - When the input array is small or empty, it will be expanded or filled with dummy objects.
+ * - When empty, specified mock fields will be populated with *safe mock proxies* created by `createMock()`.
+ *   These proxies allow arbitrary nested property access without runtime errors.
+ * - The final output ensures at least a minimum dataset size, useful for UI stress testing.
+ *
+ * Caution: Not intended for production. Should only be used in mock or visual testing environments.
+ * 
+ * ---
+ * ### Example
+ * 
+ * ** 1. Fill an empty array with 100 mock items (default):**
+ * ```html
+ * @for (item of data | mockMore) {
+ *     {{ item.id }}
+ * }
+ * ```
+ * 
+ * **2. Mock multiple fields with safe proxies:**
+ * ```html
+ * @for (item of data | mockMore: ['profile','address']) {
+ *     {{ item.profile.name.first }} – {{ item.address.city }}
+ * }
+ * ```
+ * 
+ * **3. Custom target size and display token:**
+ * ```html
+ * @for (item of data | mockMore: ['foo','bar']:200:'dummy') {
+ *     {{ item.id }} – {{ item.foo.bar.baz }} – {{ item.bar.value }}
+ * }
+ * ```
  *
  * @template T The type of array items.
  */
@@ -39,42 +67,99 @@
 })
 export class MockMorePipe<T> implements PipeTransform {
 
-    /** The number of items should be mocked. */
-    private static readonly TARGET_SIZE = 100;
-
     /**
-     * Expands the input array to exceed a target size.
-     * - If the array is empty, fills with dummy objects (with optional field).
-     * - If the array is smaller than the target size, repeatedly appends the original data.
-     * - Returns the array as-is if already larger than the target size.
-     *
-     * Note: The final result may exceed the target size.
-     *
-     * @param value The original array.
-     * @param field Optional field to populate with dummy string if the array is empty.
-     * @returns The expanded mock array.
-     */
-    transform(value: T[], field?: keyof T): T[] {
+   * Expands the input array to exceed a target size.
+   *
+   * Behavior:
+   * - If the array is empty -> fills with dummy objects containing mock proxies for specified fields.
+   * - If the array is smaller than the target size -> repeats the original data until it exceeds the target size.
+   * - If already large enough -> returns the array unchanged.
+   *
+   * Note: The final result may exceed the target size slightly due to batch duplication.
+   *
+   * @param value The original array.
+   * @param fields Optional list of keys to populate with safe mock proxies when empty.
+   * @param targetSize Minimum number of items to reach (default: 100).
+   * @param mockLabel String used when a mock proxy is coerced to string or displayed (default: `'mock'`).
+   * @returns The expanded array.
+   */
+    transform(
+        value: T[],
+        fields?: (keyof T)[],
+        targetSize: number = 100,
+        mockLabel: string = 'mock'
+    ): T[] {
         const currentLength = value.length;
 
+        // Case 1: Empty array -> fill with dummy mock objects
         if (currentLength === 0) {
-            return Array.from({ length: MockMorePipe.TARGET_SIZE }, (_, i) => {
-                if (field) {
-                    return { id: i, [field]: 'dummy'};
+            return Array.from({ length: targetSize }, (_, i) => {
+                const base: Record<string, any> = { id: i };
+                if (fields && fields.length > 0) {
+                    for (const f of fields) {
+                        base[f as string] = createMock(mockLabel);
+                    }
                 }
-                return {id: i};
-            }) as T[];
+                return base as T;
+            });
         }
-        
-        if (currentLength < MockMorePipe.TARGET_SIZE) {
+
+        // Case 2: Too small -> duplicate until exceeding target size
+        if (currentLength < targetSize) {
             const result = [...value];
-            while (result.length < MockMorePipe.TARGET_SIZE) {
+            while (result.length < targetSize) {
                 result.push(...value);
             }
             return result;
         }
-
+        
+        // Case 3: Already sufficient
         return value;
     }
 
+}
+
+/**
+ * Create a fully safe mock Proxy that:
+ * - Never throws runtime errors on any property access or method call.
+ * - Supports unlimited nesting (e.g. foo.bar.baz[0].id).
+ * - Can be used safely in template bindings (e.g. Angular `{{foo.bar}}`).
+ *
+ * @template T The intended type being mocked (for TypeScript typing convenience).
+ * @returns A Proxy that safely absorbs any operation without throwing.
+ */
+function createMock<T = any>(displayToken: string): T {
+
+    const proxy: any = new Proxy(() => {}, {
+
+        /*
+         * Trap for property access, e.g., `myProxy.foo`, `myProxy[0]`, `myProxy['foo']`.
+         * Always return the same proxy so that any depth of property access remains valid.
+         */
+        get: (_, prop) => {
+            // `Symbol.toPrimitive` is triggered when converting to a primitive type,
+            // e.g., string concatenation or template binding.
+            if (prop === Symbol.toPrimitive) {
+                return () => displayToken;
+            }
+
+            // return mock to allow infinite safe chaining
+            return proxy;
+        },
+
+        /*
+         * Trap for function calls, e.g., `myProxy()`.
+         * Return the same proxy so chained calls like `myProxy().foo.bar()` stay valid.
+         */
+        apply: () => proxy,
+
+        /*
+         * Trap for `Object.keys(myProxy)` or `for...in`.
+         * Returning an empty array prevents errors when enumerating.
+         */
+        ownKeys: () => [],
+
+    });
+
+    return proxy as unknown as T;
 }
