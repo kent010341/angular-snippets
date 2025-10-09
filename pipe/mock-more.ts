@@ -21,6 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
+
 import { Pipe, PipeTransform } from '@angular/core';
 
 /**
@@ -46,14 +47,21 @@ import { Pipe, PipeTransform } from '@angular/core';
  * }
  * ```
  * 
- * **2. Mock multiple fields with safe proxies:**
+ * **2. Mock one field with a safe proxy:**
+ * ```html
+ * @for (item of data | mockMore: 'profile') {
+ *     {{ item.profile.name.first }} – {{ item.profile.name.get() }}
+ * }
+ * ```
+ * 
+ * **3. Mock multiple fields with safe proxies:**
  * ```html
  * @for (item of data | mockMore: ['profile','address']) {
  *     {{ item.profile.name.first }} – {{ item.address.city }}
  * }
  * ```
  * 
- * **3. Custom target size and display token:**
+ * **4. Custom target size and display token:**
  * ```html
  * @for (item of data | mockMore: ['foo','bar']:200:'dummy') {
  *     {{ item.id }} – {{ item.foo.bar.baz }} – {{ item.bar.value }}
@@ -63,29 +71,44 @@ import { Pipe, PipeTransform } from '@angular/core';
  * @template T The type of array items.
  */
 @Pipe({
-    name: 'mockMore'
+    name: 'mockMore',
+    standalone: true
 })
 export class MockMorePipe<T> implements PipeTransform {
 
-    /**
-   * Expands the input array to exceed a target size.
-   *
-   * Behavior:
-   * - If the array is empty -> fills with dummy objects containing mock proxies for specified fields.
-   * - If the array is smaller than the target size -> repeats the original data until it exceeds the target size.
-   * - If already large enough -> returns the array unchanged.
-   *
-   * Note: The final result may exceed the target size slightly due to batch duplication.
-   *
-   * @param value The original array.
-   * @param fields Optional list of keys to populate with safe mock proxies when empty.
-   * @param targetSize Minimum number of items to reach (default: 100).
-   * @param mockLabel String used when a mock proxy is coerced to string or displayed (default: `'mock'`).
-   * @returns The expanded array.
-   */
+    transform(
+        value: T[],
+        field?: keyof T,
+        targetSize?: number,
+        mockLabel?: string
+    ): T[];
+
     transform(
         value: T[],
         fields?: (keyof T)[],
+        targetSize?: number,
+        mockLabel?: string
+    ): T[];
+
+    /**
+     * Expands the input array to exceed a target size.
+     *
+     * Behavior:
+     * - If the array is empty -> fills with dummy objects containing mock proxies for specified fields.
+     * - If the array is smaller than the target size -> repeats the original data until it exceeds the target size.
+     * - If already large enough -> returns the array unchanged.
+     *
+     * Note: The final result may exceed the target size slightly due to batch duplication.
+     *
+     * @param value The original array.
+     * @param fieldsOrField One or more field keys to populate with mock proxies.
+     * @param targetSize Minimum number of items to reach (default: 100).
+     * @param mockLabel String used when a mock proxy is coerced to string or displayed (default: `'mock'`).
+     * @returns The expanded array.
+     */
+    transform(
+        value: T[],
+        fieldsOrField?: (keyof T)[] | keyof T,
         targetSize: number = 100,
         mockLabel: string = 'mock'
     ): T[] {
@@ -93,8 +116,13 @@ export class MockMorePipe<T> implements PipeTransform {
 
         // Case 1: Empty array -> fill with dummy mock objects
         if (currentLength === 0) {
+            const fields = Array.isArray(fieldsOrField)
+                ? fieldsOrField
+                : fieldsOrField ? [fieldsOrField] : [];
+
             return Array.from({ length: targetSize }, (_, i) => {
                 const base: Record<string, any> = { id: i };
+                
                 if (fields && fields.length > 0) {
                     for (const f of fields) {
                         base[f as string] = createMock(mockLabel);
